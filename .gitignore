@@ -1,4 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Spark
+data/checkpoints/
+data/raw/
+data/processed/
+
+# Docker
 .env
-.env.example
-node_modules
-GITCommit.bat
+
+# OS
+.DS_Store
