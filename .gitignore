@@ -1,5 +1,6 @@
 # Python
 .venv/
+.cache/
 __pycache__/
 *.pyc
 
@@ -10,6 +11,10 @@ data/processed/
 
 # Docker
 .env
-
+.env.example
 # OS
 .DS_Store
+GITCommit.sh
+# Spark/Ivy cache
+.cache/
+

@@ -16,9 +16,9 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
 
   postgres:
@@ -32,8 +32,38 @@ services:
     volumes:
       - ./sql/postgres_init.sql:/docker-entrypoint-initdb.d/init.sql
 
-  spark:
-    image: apache/spark:3.5.1-python3
+  event-generator:
+    build: ./services/event-generator
+    depends_on:
+      - kafka
+    environment:
+      BOOTSTRAP: "kafka:29092"
+      TOPIC: "stream.events"
+      # Optional: if your producer supports it
+      # EVENTS_PER_SEC: "25"
+      # STREAM_IDS: "stream_1001,stream_1002,stream_1003"
+    command: ["python", "producer.py"]
+  
+  metrics-api:
+    build: ./services/metrics-api
+    depends_on:
+      - postgres
+    environment:
+      PG_HOST: "postgres"
+      PG_PORT: "5432"
+      PG_DB: "realtime"
+      PG_USER: "rt"
+      PG_PASSWORD: "rt"
+      PG_METRICS_TABLE: "stream_metrics_minute"
+      PG_STATE_TABLE: "stream_state"
+    ports:
+      - "8000:8000"
+
+  spark-stream:
+    build:
+      context: .
+      dockerfile: ./services/stream-processor/Dockerfile
+    user: "0:0"
     depends_on:
       - kafka
       - postgres
@@ -41,5 +71,39 @@ services:
       - ./services/stream-processor:/opt/spark-apps
       - ./data/checkpoints:/opt/spark-checkpoints
     working_dir: /opt/spark-apps
+    environment:
+      # Spark app
+      SPARK_APP_NAME: "realtime-stream-analytics"
+      SPARK_LOG_LEVEL: "WARN"
+      SPARK_SHUFFLE_PARTITIONS: "4"
 
+      # Kafka (matches spark_streaming_job.py)
+      KAFKA_BOOTSTRAP: "kafka:29092"
+      KAFKA_TOPIC: "stream.events"
+      KAFKA_STARTING_OFFSETS: "latest"   # set "earliest" for debugging/replays
 
+      # Streaming knobs (matches spark_streaming_job.py)
+      WATERMARK_DELAY: "10 minutes"
+      WINDOW_DURATION: "1 minute"
+      TRIGGER_INTERVAL: "10 seconds"
+
+      # Checkpoints (matches spark_streaming_job.py)
+      CHECKPOINT_ROOT: "/opt/spark-checkpoints"
+      CHECKPOINT_DIR: "/opt/spark-checkpoints/stream_metrics_minute"
+
+      # Postgres (matches spark_streaming_job.py)
+      PG_HOST: "postgres"
+      PG_PORT: "5432"
+      PG_DB: "realtime"
+      PG_USER: "rt"
+      PG_PASSWORD: "rt"
+
+      # Tables (matches spark_streaming_job.py)
+      PG_METRICS_TABLE: "stream_metrics_minute"
+      PG_STATE_TABLE: "stream_state"
+
+    command: >
+      bash -lc "/opt/spark/bin/spark-submit
+      --master local[*]
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.postgresql:postgresql:42.7.3
+      /opt/spark-apps/spark_streaming_job.py"
