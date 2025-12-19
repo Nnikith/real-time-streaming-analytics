@@ -4,17 +4,17 @@
 __pycache__/
 *.pyc
 
-# Spark
+# Spark / local data
 data/checkpoints/
 data/raw/
 data/processed/
 
-# Docker
+# Docker / env
 .env
 .env.example
+
 # OS
 .DS_Store
-GITCommit.sh
-# Spark/Ivy cache
-.cache/
 
+# Local helper scripts (optional)
+GITCommit.sh
