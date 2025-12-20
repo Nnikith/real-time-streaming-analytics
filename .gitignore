@@ -28,3 +28,4 @@ data/processed/
 # Local helper scripts (optional)
 GITCommit.sh
 GITCommit.bat
+makeup output.txt
