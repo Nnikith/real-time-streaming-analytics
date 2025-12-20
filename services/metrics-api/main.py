@@ -4,7 +4,7 @@ from typing import Optional, Literal, Dict, Any
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from fastapi import FastAPI, Query, HTTPException
-
+from datetime import datetime, timedelta, timezone  # add near imports
 
 # -----------------------------
 # Config
@@ -233,3 +233,32 @@ def top_streams(
                 return {"latest_window_start": _to_iso(latest), "by": by, "rows": rows}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/metrics/history")
+def metrics_history(
+    minutes: int = Query(60, ge=1, le=1440),
+    stream_id: Optional[str] = Query(None),
+):
+    """
+    Returns per-minute metrics for the last N minutes.
+    Optional filter by stream_id.
+    """
+    since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+
+    where = "WHERE window_start >= %s"
+    params = [since]
+
+    if stream_id:
+        where += " AND stream_id = %s"
+        params.append(stream_id)
+
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(f"""
+                SELECT window_start, window_end, stream_id,
+                       active_viewers, chat_messages, donations_usd
+                FROM {PG_METRICS_TABLE}
+                {where}
+                ORDER BY window_start ASC, stream_id ASC;
+            """, tuple(params))
+            return {"since": since.isoformat(), "minutes": minutes, "rows": cur.fetchall()}

@@ -1,9 +1,51 @@
-init:
-	mkdir -p architecture data/raw data/processed services/event-generator services/stream-processor services/metrics-api sql docs
-	touch README.md docker-compose.yml .env.example
-	touch architecture/architecture.mmd
-	touch services/event-generator/requirements.txt services/event-generator/producer.py
-	touch services/stream-processor/requirements.txt services/stream-processor/spark_streaming_job.py
-	touch services/metrics-api/requirements.txt services/metrics-api/app.py
-	touch sql/postgres_init.sql
-	touch docs/decisions.md docs/runbook.md
+.PHONY: up down reset smoke commit help full-down ps logs logs-spark logs-producer logs-api doctor
+
+up:
+	@bash scripts/start.sh
+
+down:
+	@bash scripts/stop.sh
+
+full-down:
+	@bash scripts/stop.sh no
+
+reset:
+	@bash scripts/reset.sh
+
+smoke:
+	@bash scripts/smoke.sh
+
+doctor:
+	@bash scripts/doctor.sh
+
+commit:
+	@bash scripts/git_commit.sh
+
+ps:
+	@docker compose ps
+
+logs:
+	@docker compose logs -f
+
+logs-spark:
+	@docker compose logs -f spark-stream
+
+logs-producer:
+	@docker compose logs -f event-generator
+
+logs-api:
+	@docker compose logs -f metrics-api
+
+help:
+	@echo "Available commands:"
+	@echo "  make up            Start full pipeline"
+	@echo "  make down          Stop pipeline"
+	@echo "  make full-down     Stop pipeline and deletes Postgres data + checkpoints"
+	@echo "  make reset         Clean state + restart"
+	@echo "  make smoke         Run smoke tests"
+	@echo "  make commit        Interactive git commit"
+	@echo "  make ps            Docker compose status"
+	@echo "  make logs          Follow all logs"
+	@echo "  make logs-spark    Follow Spark logs"
+	@echo "  make logs-producer Follow producer logs"
+	@echo "  make logs-api      Follow API logs"
