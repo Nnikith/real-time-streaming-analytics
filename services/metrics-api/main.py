@@ -1,264 +1,185 @@
 import os
-from typing import Optional, Literal, Dict, Any
+from datetime import datetime, timezone
+from typing import Literal, Optional, Any, Dict, List
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from fastapi import FastAPI, Query, HTTPException
-from datetime import datetime, timedelta, timezone  # add near imports
 
-# -----------------------------
-# Config
-# -----------------------------
-APP_NAME = os.getenv("APP_NAME", "metrics-api")
+app = FastAPI(title="Real-Time Streaming Analytics Metrics API")
 
 PG_HOST = os.getenv("PG_HOST", "postgres")
 PG_PORT = int(os.getenv("PG_PORT", "5432"))
 PG_DB = os.getenv("PG_DB", "realtime")
 PG_USER = os.getenv("PG_USER", "rt")
-PG_PASSWORD = os.getenv("PG_PASSWORD", "rt")
-
-PG_METRICS_TABLE = os.getenv("PG_METRICS_TABLE", "stream_metrics_minute")
-PG_STATE_TABLE = os.getenv("PG_STATE_TABLE", "stream_state")
-
-# Optional: DATABASE_URL overrides individual PG_* vars
-DATABASE_URL = os.getenv("DATABASE_URL")  # e.g. postgresql://rt:rt@postgres:5432/realtime
+PG_PASS = os.getenv("PG_PASS", "rt")
+PG_TABLE = os.getenv("PG_TABLE", "stream_metrics_minute")
 
 
-# -----------------------------
-# App
-# -----------------------------
-app = FastAPI(title=APP_NAME)
-
-
-def _is_safe_ident(name: str) -> bool:
-    """
-    Minimal identifier allowlist:
-    - letters, digits, underscore
-    - must start with letter/underscore
-    """
-    if not name:
-        return False
-    if not (name[0].isalpha() or name[0] == "_"):
-        return False
-    for ch in name:
-        if not (ch.isalnum() or ch == "_"):
-            return False
-    return True
-
-
-def _safe_table(name: str) -> str:
-    if not _is_safe_ident(name):
-        raise ValueError(f"Unsafe table name: {name!r}")
-    return name
-
-
-SAFE_METRICS_TABLE = _safe_table(PG_METRICS_TABLE)
-SAFE_STATE_TABLE = _safe_table(PG_STATE_TABLE)
-
-
-def get_conn():
-    if DATABASE_URL:
-        return psycopg2.connect(DATABASE_URL)
+def pg_conn():
     return psycopg2.connect(
-        host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASSWORD
+        host=PG_HOST,
+        port=PG_PORT,
+        dbname=PG_DB,
+        user=PG_USER,
+        password=PG_PASS,
+        cursor_factory=RealDictCursor,
     )
 
 
-def _fetchone_dict(cur) -> Dict[str, Any]:
-    row = cur.fetchone()
-    return dict(row) if row else {}
+def fetch_all(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return list(cur.fetchall())
 
 
-def _to_iso(obj):
-    # psycopg2 returns datetime objects for timestamptz/timestamp; FastAPI can serialize,
-    # but we’ll normalize to ISO strings for consistent output.
-    if obj is None:
-        return None
-    try:
-        return obj.isoformat()
-    except Exception:
-        return str(obj)
+def fetch_one(sql: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
+    rows = fetch_all(sql, params)
+    return rows[0] if rows else None
 
 
 @app.get("/health")
 def health():
+    # Basic connectivity check
     try:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1;")
-        return {"ok": True}
+        one = fetch_one("SELECT 1 AS ok;")
+        return {"ok": True, "db": bool(one and one.get("ok") == 1)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/state")
-def state():
-    try:
-        with get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(f"""
-                    SELECT stream_id, active_viewers, updated_at
-                    FROM {SAFE_STATE_TABLE}
-                    ORDER BY updated_at DESC, stream_id;
-                """)
-                rows = cur.fetchall()
-                for r in rows:
-                    r["updated_at"] = _to_iso(r.get("updated_at"))
-                return {"streams": rows}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/metrics/latest")
-def latest_metrics(
-    stream_id: Optional[str] = Query(None, description="Filter to a single stream_id (e.g., stream_1002)")
-):
-    """
-    Latest window metrics (for all streams or one stream).
-    """
-    try:
-        with get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(f"SELECT MAX(window_start) AS latest FROM {SAFE_METRICS_TABLE};")
-                latest = _fetchone_dict(cur).get("latest")
-
-                if latest is None:
-                    return {"latest_window_start": None, "rows": []}
-
-                if stream_id:
-                    cur.execute(f"""
-                        SELECT window_start, window_end, stream_id, active_viewers, chat_messages, donations_usd
-                        FROM {SAFE_METRICS_TABLE}
-                        WHERE window_start = %s AND stream_id = %s
-                        ORDER BY stream_id;
-                    """, (latest, stream_id))
-                else:
-                    cur.execute(f"""
-                        SELECT window_start, window_end, stream_id, active_viewers, chat_messages, donations_usd
-                        FROM {SAFE_METRICS_TABLE}
-                        WHERE window_start = %s
-                        ORDER BY stream_id;
-                    """, (latest,))
-
-                rows = cur.fetchall()
-                for r in rows:
-                    r["window_start"] = _to_iso(r.get("window_start"))
-                    r["window_end"] = _to_iso(r.get("window_end"))
-
-                return {"latest_window_start": _to_iso(latest), "rows": rows}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.get("/metrics")
-def metrics_history(
-    minutes: int = Query(15, ge=1, le=24 * 60, description="How many minutes of history to return"),
-    stream_id: Optional[str] = Query(None, description="Filter to a single stream_id"),
+def metrics(
+    stream_id: Optional[str] = Query(default=None, description="Filter metrics by stream_id"),
+    minutes: int = Query(default=60, ge=1, le=24 * 60, description="Lookback window in minutes"),
+    limit: int = Query(default=200, ge=1, le=5000, description="Max rows returned"),
+    order_by: Literal["window_start", "donations_usd", "chat_messages", "active_viewers"] = Query(
+        default="window_start", description="Sort column"
+    ),
+    direction: Literal["asc", "desc"] = Query(default="desc", description="Sort direction"),
 ):
-    """
-    History endpoint.
-    Returns all rows from the last N minutes (by window_start) for all streams or one stream.
-    """
-    try:
-        with get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Use latest window_start as an anchor to make "last N minutes" stable.
-                cur.execute(f"SELECT MAX(window_start) AS latest FROM {SAFE_METRICS_TABLE};")
-                latest = _fetchone_dict(cur).get("latest")
-                if latest is None:
-                    return {"latest_window_start": None, "minutes": minutes, "rows": []}
+    # Build safe ORDER BY
+    allowed = {"window_start", "donations_usd", "chat_messages", "active_viewers"}
+    if order_by not in allowed:
+        raise HTTPException(status_code=400, detail="Invalid order_by")
+    if direction not in {"asc", "desc"}:
+        raise HTTPException(status_code=400, detail="Invalid direction")
 
-                if stream_id:
-                    cur.execute(f"""
-                        SELECT window_start, window_end, stream_id, active_viewers, chat_messages, donations_usd
-                        FROM {SAFE_METRICS_TABLE}
-                        WHERE stream_id = %s
-                          AND window_start >= (%s::timestamp - (%s || ' minutes')::interval)
-                          AND window_start <= %s
-                        ORDER BY window_start DESC, stream_id;
-                    """, (stream_id, latest, minutes, latest))
-                else:
-                    cur.execute(f"""
-                        SELECT window_start, window_end, stream_id, active_viewers, chat_messages, donations_usd
-                        FROM {SAFE_METRICS_TABLE}
-                        WHERE window_start >= (%s::timestamp - (%s || ' minutes')::interval)
-                          AND window_start <= %s
-                        ORDER BY window_start DESC, stream_id;
-                    """, (latest, minutes, latest))
-
-                rows = cur.fetchall()
-                for r in rows:
-                    r["window_start"] = _to_iso(r.get("window_start"))
-                    r["window_end"] = _to_iso(r.get("window_end"))
-
-                return {"latest_window_start": _to_iso(latest), "minutes": minutes, "rows": rows}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/metrics/top")
-def top_streams(
-    by: Literal["viewers", "chat", "donations"] = "donations",
-    limit: int = Query(3, ge=1, le=50),
-):
-    """
-    Top streams for the latest window by viewers/chat/donations.
-    """
-    order_expr = {
-        "viewers": "active_viewers DESC",
-        "chat": "chat_messages DESC",
-        "donations": "donations_usd DESC",
-    }[by]
-
-    try:
-        with get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(f"SELECT MAX(window_start) AS latest FROM {SAFE_METRICS_TABLE};")
-                latest = _fetchone_dict(cur).get("latest")
-                if latest is None:
-                    return {"latest_window_start": None, "by": by, "rows": []}
-
-                cur.execute(f"""
-                    SELECT window_start, stream_id, active_viewers, chat_messages, donations_usd
-                    FROM {SAFE_METRICS_TABLE}
-                    WHERE window_start = %s
-                    ORDER BY {order_expr}
-                    LIMIT %s;
-                """, (latest, limit))
-
-                rows = cur.fetchall()
-                for r in rows:
-                    r["window_start"] = _to_iso(r.get("window_start"))
-
-                return {"latest_window_start": _to_iso(latest), "by": by, "rows": rows}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/metrics/history")
-def metrics_history(
-    minutes: int = Query(60, ge=1, le=1440),
-    stream_id: Optional[str] = Query(None),
-):
-    """
-    Returns per-minute metrics for the last N minutes.
-    Optional filter by stream_id.
-    """
-    since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-
-    where = "WHERE window_start >= %s"
-    params = [since]
+    where = "WHERE window_start > NOW() - (%s || ' minutes')::interval"
+    params: List[Any] = [minutes]
 
     if stream_id:
         where += " AND stream_id = %s"
         params.append(stream_id)
 
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(f"""
-                SELECT window_start, window_end, stream_id,
-                       active_viewers, chat_messages, donations_usd
-                FROM {PG_METRICS_TABLE}
-                {where}
-                ORDER BY window_start ASC, stream_id ASC;
-            """, tuple(params))
-            return {"since": since.isoformat(), "minutes": minutes, "rows": cur.fetchall()}
+    sql = f"""
+      SELECT window_start, window_end, stream_id, active_viewers, chat_messages, donations_usd
+      FROM {PG_TABLE}
+      {where}
+      ORDER BY {order_by} {direction}
+      LIMIT %s
+    """
+    params.append(limit)
+
+    rows = fetch_all(sql, tuple(params))
+
+    latest = None
+    if rows:
+        # latest window_start among returned rows (not necessarily newest if sorting by another column)
+        latest = max(r["window_start"] for r in rows)
+
+    return {
+        "rows": rows,
+        "latest_window_start": latest,
+        "filters": {
+            "stream_id": stream_id,
+            "minutes": minutes,
+            "limit": limit,
+            "order_by": order_by,
+            "direction": direction,
+        },
+        "server_time_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/metrics/latest")
+def metrics_latest(
+    stream_id: Optional[str] = Query(default=None),
+):
+    # “Latest complete window”: choose max(window_start) where window_end <= now()
+    # This avoids a partially-updating current minute.
+    where = "WHERE window_end <= NOW()"
+    params: List[Any] = []
+
+    if stream_id:
+        where += " AND stream_id = %s"
+        params.append(stream_id)
+
+    row = fetch_one(
+        f"""
+        SELECT window_start, window_end, stream_id, active_viewers, chat_messages, donations_usd
+        FROM {PG_TABLE}
+        {where}
+        ORDER BY window_start DESC
+        LIMIT 1
+        """,
+        tuple(params),
+    )
+
+    return {"row": row, "server_time_utc": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/streams")
+def streams(
+    minutes: int = Query(default=120, ge=1, le=24 * 60),
+    limit: int = Query(default=200, ge=1, le=5000),
+):
+    rows = fetch_all(
+        f"""
+        SELECT stream_id, MAX(window_start) AS last_seen
+        FROM {PG_TABLE}
+        WHERE window_start > NOW() - (%s || ' minutes')::interval
+        GROUP BY stream_id
+        ORDER BY last_seen DESC
+        LIMIT %s
+        """,
+        (minutes, limit),
+    )
+    return {"rows": rows, "server_time_utc": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/streams/top")
+def streams_top(
+    minutes: int = Query(default=10, ge=1, le=24 * 60),
+    n: int = Query(default=10, ge=1, le=200),
+    by: Literal["active_viewers", "chat_messages", "donations_usd"] = Query(default="donations_usd"),
+):
+    # Aggregate over last N minutes.
+    # For active_viewers, taking MAX is more meaningful than SUM.
+    if by == "active_viewers":
+        agg = "MAX(active_viewers) AS value"
+    elif by == "chat_messages":
+        agg = "SUM(chat_messages) AS value"
+    else:
+        agg = "ROUND(SUM(donations_usd)::numeric, 2) AS value"
+
+
+    rows = fetch_all(
+        f"""
+        SELECT stream_id, {agg}
+        FROM {PG_TABLE}
+        WHERE window_start > NOW() - (%s || ' minutes')::interval
+        GROUP BY stream_id
+        ORDER BY value DESC NULLS LAST
+        LIMIT %s
+        """,
+        (minutes, n),
+    )
+
+    return {
+        "rows": rows,
+        "by": by,
+        "minutes": minutes,
+        "server_time_utc": datetime.now(timezone.utc).isoformat(),
+    }

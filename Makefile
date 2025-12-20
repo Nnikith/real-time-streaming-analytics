@@ -19,7 +19,7 @@ doctor:
 	@bash scripts/doctor.sh
 
 commit:
-	@bash scripts/git_commit.sh
+	@bash scripts/git_commit.sh $(MSG)
 
 ps:
 	@docker compose ps
