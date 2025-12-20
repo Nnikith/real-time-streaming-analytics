@@ -6,143 +6,122 @@ services:
       ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "2181:2181"
+    restart: unless-stopped
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     depends_on:
       zookeeper:
         condition: service_started
-
     ports:
-      - "9092:9092"
+      - "9092:9092"   # host access
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092"
+
+      # Listen internally on 29092, and expose host listener on 9092
       KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
       interval: 10s
       timeout: 10s
-      retries: 20
+      retries: 30
+    restart: unless-stopped
 
   postgres:
-    image: postgres:16
+    image: postgres:15-alpine
     environment:
+      POSTGRES_DB: realtime
       POSTGRES_USER: rt
       POSTGRES_PASSWORD: rt
-      POSTGRES_DB: realtime
     ports:
       - "5432:5432"
     volumes:
-      - ./sql/postgres_init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./sql/init:/docker-entrypoint-initdb.d:ro
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rt -d realtime >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "pg_isready -U rt -d realtime"]
       interval: 5s
       timeout: 5s
       retries: 30
-
-  event-generator:
-    build: ./services/event-generator
-    depends_on:
-      kafka:
-        condition: service_healthy
-    environment:
-      BOOTSTRAP: "kafka:29092"
-      TOPIC: "stream.events"
-    command: ["python", "producer.py"]
-
-  metrics-api:
-    build: ./services/metrics-api
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PG_HOST: "postgres"
-      PG_PORT: "5432"
-      PG_DB: "realtime"
-      PG_USER: "rt"
-      PG_PASSWORD: "rt"
-      PG_METRICS_TABLE: "stream_metrics_minute"
-      PG_STATE_TABLE: "stream_state"
-    ports:
-      - "8000:8000"
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()\" >/dev/null 2>&1"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
+    restart: unless-stopped
 
   spark-stream:
     build:
-      context: .
-      dockerfile: ./services/stream-processor/Dockerfile
-
+      context: ./services/stream-processor
     depends_on:
       kafka:
         condition: service_healthy
       postgres:
         condition: service_healthy
-
-    working_dir: /opt/spark-apps
-    restart: unless-stopped
-
     environment:
-      # ---- Fix Ivy/Packages crash ----
-      HOME: "/tmp"
-      SPARK_LOCAL_DIRS: "/tmp/spark"
-      SPARK_SUBMIT_OPTS: "-Divy.cache.dir=/tmp/.ivy2 -Divy.home=/tmp/.ivy2"
-
-      # ---- Spark app ----
-      SPARK_APP_NAME: "realtime-stream-analytics"
-      SPARK_LOG_LEVEL: "WARN"
-      SPARK_SHUFFLE_PARTITIONS: "4"
-
-      # ---- Kafka ----
       KAFKA_BOOTSTRAP: "kafka:29092"
       KAFKA_TOPIC: "stream.events"
-      # IMPORTANT: makes smoke tests deterministic on fresh start
-      KAFKA_STARTING_OFFSETS: "earliest"
-
-      # ---- Streaming knobs ----
-      WATERMARK_DELAY: "30 seconds"
-      WINDOW_DURATION: "1 minute"
-      TRIGGER_INTERVAL: "10 seconds"
-
-      # ---- Checkpoints ----
-      CHECKPOINT_ROOT: "/opt/spark-checkpoints"
-      CHECKPOINT_METRICS: "/opt/spark-checkpoints/stream_metrics_minute"
-
-      # ---- Postgres ----
       PG_HOST: "postgres"
       PG_PORT: "5432"
       PG_DB: "realtime"
       PG_USER: "rt"
-      PG_PASSWORD: "rt"
-
-      # ---- Tables ----
-      PG_METRICS_TABLE: "stream_metrics_minute"
+      PG_PASS: "rt"
+      PG_TABLE: "stream_metrics_minute"
       PG_STATE_TABLE: "stream_state"
-
+      CHECKPOINT: "/opt/spark-checkpoints/stream_metrics_minute_stateful"
+      STARTING_OFFSETS: "latest"
+      WATERMARK: "10 minutes"
+      WINDOW: "1 minute"
     volumes:
       - ./services/stream-processor:/opt/spark-apps
       - spark_tmp:/tmp
       - spark_checkpoints:/opt/spark-checkpoints
-
     command: >
       bash -lc "/opt/spark/bin/spark-submit
       --master local[*]
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.postgresql:postgresql:42.7.3
       /opt/spark-apps/spark_streaming_job.py"
-
     healthcheck:
       test: ["CMD-SHELL", "test -d /tmp/.ivy2 && test -d /opt/spark-checkpoints"]
       interval: 10s
       timeout: 5s
       retries: 18
+    restart: unless-stopped
+
+  metrics-api:
+    build:
+      context: ./services/metrics-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PG_HOST: "postgres"
+      PG_PORT: "5432"
+      PG_DB: "realtime"
+      PG_USER: "rt"
+      PG_PASS: "rt"
+      PG_TABLE: "stream_metrics_minute"
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  event-generator:
+    build:
+      context: ./services/event-generator
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: "kafka:29092"
+      TOPIC: "stream.events"
+    restart: unless-stopped
 
 volumes:
   spark_tmp:
   spark_checkpoints:
+  postgres_data:

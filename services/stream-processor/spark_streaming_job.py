@@ -59,34 +59,6 @@ def pg_conn():
     )
 
 
-def ensure_tables():
-    ddl_metrics = f"""
-    CREATE TABLE IF NOT EXISTS {METRICS_TABLE} (
-        window_start TIMESTAMPTZ NOT NULL,
-        window_end   TIMESTAMPTZ NOT NULL,
-        stream_id    TEXT        NOT NULL,
-        active_viewers INTEGER   NOT NULL DEFAULT 0,
-        chat_messages  INTEGER   NOT NULL DEFAULT 0,
-        donations_usd  DOUBLE PRECISION NOT NULL DEFAULT 0,
-        PRIMARY KEY (window_start, stream_id)
-    );
-    """
-
-    ddl_state = f"""
-    CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
-        stream_id TEXT PRIMARY KEY,
-        active_viewers INTEGER NOT NULL DEFAULT 0,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    """
-
-    with pg_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(ddl_metrics)
-            cur.execute(ddl_state)
-        conn.commit()
-
-
 def clamp_nonnegative(x: int) -> int:
     return 0 if x is None or x < 0 else x
 
@@ -102,8 +74,6 @@ def main():
     )
 
     spark.sparkContext.setLogLevel(os.getenv("SPARK_LOG_LEVEL", "WARN"))
-
-    ensure_tables()
 
     # Kafka JSON schema
     #
