@@ -1,4 +1,4 @@
-# Real-Time Streaming Analytics (Kafka → Spark → Postgres → FastAPI)
+# 🚀 Real-Time Streaming Analytics <br>(Kafka → Spark → Postgres → FastAPI)
 
 A Docker Compose-based real-time analytics pipeline:
 - **Kafka** for event ingestion
@@ -7,9 +7,14 @@ A Docker Compose-based real-time analytics pipeline:
 - **FastAPI** for query APIs (`/metrics`, `/streams/top`, etc.)
 - **Smoke tests** to validate the full pipeline end-to-end
 
+This repo is designed to be:
+- **one-command runnable**
+- **CI-friendly**
+- **restart-safe**
+
 ---
 
-## Architecture
+## 🧱 Architecture
 
 ```mermaid
 ---
@@ -30,177 +35,137 @@ flowchart LR
     SP -- UPSERT per minute window --> PG
     API -- SQL queries --> PG
 ```
+
+---
+## 📚 Documentation
+
+- 📘 **[Runbook](docs/runbook.md)** — how to run, debug, and recover the system  
+- 🧠 **[Architecture Decisions](docs/decisions.md)** — why these tools and patterns were chosen  
+- 🛠️ **[Scripts Reference](scripts/README.md)** — helper scripts explained  
+- 🗂️ **[Project Index](Index.md)** — navigation + notes
+
 ---
 
-## Quickstart
+## Repo Map
 
-### Prereqs
-- Docker + Docker Compose
-- GNU Make
+### Top-level
+- `docker-compose.yml` — full stack definition
+- `Makefile` — shortcuts (`make up`, `make reset`, `make smoke`, `make commit`)
+- `README.md` — project overview
+- `Index.md` — project notes / index
+- `docs/`
+  - `runbook.md` — operational guide
+  - `decisions.md` — architectural decisions
+- `architecture/`
+  - `architecture.mmd` — diagram source
+  - `docker.png` — exported architecture diagram
 
-### Run the stack
+### Services
+- `services/event-generator/` — Kafka producer
+- `services/stream-processor/` — Spark Structured Streaming job
+- `services/metrics-api/` — FastAPI metrics service
+
+### Database
+- `sql/init/001_stream_tables.sql` — Postgres init schema
+- `sql/postgres_init.sql` — legacy init (optional)
+
+### Scripts
+- `scripts/start.sh` — start stack
+- `scripts/stop.sh` — stop stack
+- `scripts/reset.sh` — full reset (wipe volumes)
+- `scripts/smoke.sh` — end-to-end smoke test
+- `scripts/doctor.sh` — diagnostics
+- `scripts/git_commit.sh` — commit helper
+- `scripts/lib.sh` — shared bash helpers
+---
+## ▶️ Quickstart
+
 ```bash
 make up
+make smoke
 ```
 
-### Run smoke tests (recommended)
-Smoke validates:
-- topic exists
-- offsets advance
-- Spark healthy
-- Postgres has recent rows
-- **donations aggregation works** (deterministic donation injection)
-- API `/health` and `/metrics` respond
+♻️ Full reset (wipe volumes, re-run DB init):
+```bash
+make reset
+```
+
+---
+
+## 🧪 Smoke Tests
+
+Smoke tests validate:
+- 📡 Kafka topic exists
+- ⚡ Producer offsets advance
+- 🔥 Spark is healthy
+- 🐘 Postgres has recent rows
+- 💰 Donations aggregate correctly
+- 🌐 API endpoints respond
 
 ```bash
 make smoke
 ```
 
-### Full reset (wipe volumes)
-Use this when you want Postgres init scripts to re-run (fresh DB):
-```bash
-make reset
-```
-
 ---
 
-## Services
+## 🌐 API Examples
 
-- **Kafka + Zookeeper**: event ingestion
-- **Event Generator**: produces `stream.events`
-- **Spark (stream-processor)**: minute-window metrics aggregation + Postgres upserts
-- **Postgres**: stores `stream_metrics_minute`, `stream_state`
-- **FastAPI (metrics-api)**: query metrics via HTTP
-
----
-
-## Event format (Kafka topic: `stream.events`)
-
-Example donation event:
-```json
-{
-  "event_id": "manual-donation-1",
-  "ts": "2025-12-20T18:34:38.300308+00:00",
-  "event_type": "donation",
-  "stream_id": "stream_1001",
-  "user_id": "user_999",
-  "amount_usd": 25.0
-}
-```
-
-Supported event types (typical):
-- `viewer_join`, `viewer_leave` → contributes to `active_viewers` state
-- `chat_message` → contributes to `chat_messages`
-- `donation` (`amount_usd`) → contributes to `donations_usd`
-
----
-
-## Data model (Postgres)
-
-### `stream_metrics_minute`
-Primary key: **(window_start, stream_id)**
-
-Columns:
-- `window_start`, `window_end`
-- `stream_id`
-- `active_viewers`
-- `chat_messages`
-- `donations_usd`
-
-### `stream_state`
-Primary key: **(stream_id)**  
-Stores current active viewers for each stream.
-
-> Tables are initialized via Postgres init scripts in `sql/init/`.
-
----
-
-## API
-
-Base URL:
-- http://localhost:8000
-
-### Health
 ```bash
 curl -s http://localhost:8000/health
-```
-
-### Metrics (filter + lookback)
-```bash
 curl -s "http://localhost:8000/metrics?minutes=10&limit=5" | jq
-```
-
-Filter by stream:
-```bash
-curl -s "http://localhost:8000/metrics?stream_id=stream_1001&minutes=30&limit=20" | jq
-```
-
-### Latest complete window
-```bash
-curl -s "http://localhost:8000/metrics/latest?stream_id=stream_1001" | jq
-```
-
-### Top streams (by donations/chat/viewers)
-```bash
 curl -s "http://localhost:8000/streams/top?minutes=10&by=donations_usd&n=5" | jq
 ```
 
 ---
 
-## Streaming semantics (guarantees)
+## Database Notes
 
-- **Windowing**: metrics are computed per **1-minute window** per `stream_id`
-- **Late data handling**: watermark applied (configurable)
-- **Upsert-safe writes**: Postgres upsert ensures a single row per `(window_start, stream_id)`
-- **Restart safety**: checkpointing ensures Spark can resume without duplicating state
+Postgres init scripts run only on a fresh data directory.
+
+If tables did not change:
+```bash
+make reset
+```
 
 ---
 
 ## Troubleshooting
 
-### Postgres init scripts not running
-Postgres runs `/docker-entrypoint-initdb.d` scripts only on a **fresh** data directory.
-
-Fix:
+Run diagnostics:
 ```bash
-make reset
+bash scripts/doctor.sh
 ```
 
-### Kafka offsets not advancing
-Check producer logs:
-```bash
-docker compose logs -f event-generator
-```
-
-### Spark startup / Ivy cache issues
-Ensure Spark has writable `/tmp` and checkpoints volume. Check logs:
+Check logs:
 ```bash
 docker compose logs -f spark-stream
 ```
 
 ---
 
-## CI
+## Git Workflow
 
-GitHub Actions runs `make up` + `make smoke` on every push/PR.
+Auto commit:
+```bash
+make commit
+```
+
+Custom message:
+```bash
+make commit MSG="api: improve top streams endpoint"
+```
 
 ---
 
-## Optional Observability (Planned)
+## 📊 Observability (Planned)
 
-This repo is designed to add observability later with minimal changes:
-- **Prometheus**: scrape API + (optional) Spark metrics endpoint
-- **Grafana**: dashboards for donations/chat/viewers per stream
-
-When implemented, this section will be expanded with:
-- `docker-compose` additions (`prometheus`, `grafana`)
-- scrape config + dashboard import steps
-- extra Make targets (e.g., `make obs-up`)
+- 📈 Prometheus metrics
+- 📊 Grafana dashboards
 
 ---
 
 ## Roadmap
 
-- [ ] Prometheus + Grafana observability pack
-- [ ] README screenshots + sample dashboard
-- [ ] More API queries (pagination, advanced filters)
+- [ ] Observability
+- [ ] Dashboard screenshots
+- [ ] Advanced API filters
