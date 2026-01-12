@@ -13,7 +13,6 @@ echo "=========================================="
 need_cmd curl
 need_cmd docker
 
-# Resolve compose container IDs dynamically (no hardcoded names)
 # Resolve container IDs
 pg_cid="$(docker compose ps -q postgres || true)"
 kafka_cid="$(docker compose ps -q kafka || true)"
@@ -29,7 +28,6 @@ if (( ${#missing[@]} > 0 )); then
   docker compose ps || true
   exit 1
 fi
-
 
 info "[1] Kafka topic exists"
 docker exec -i "${kafka_cid}" bash -lc "kafka-topics --bootstrap-server localhost:9092 --describe --topic '${TOPIC}' >/dev/null"
@@ -63,9 +61,7 @@ wait_until_dots "Postgres has recent rows in stream_metrics_minute" 150 bash -lc
      | grep -E '^[0-9]+' | awk '{exit !(\\\$1>0)}'\""
 
 info "[4b] Produce a deterministic donation event (self-contained check)"
-# Use a unique event_id so we can target it if needed
 don_id="smoke-donation-$(date +%s)"
-# ISO timestamp in UTC with Z (Spark code normalizes Z)
 don_ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 don_stream="stream_1001"
 don_amount="25.0"
@@ -73,7 +69,6 @@ don_json="$(cat <<EOF
 {"event_id":"${don_id}","ts":"${don_ts}","event_type":"donation","stream_id":"${don_stream}","user_id":"smoke_user","amount_usd":${don_amount}}
 EOF
 )"
-# Send into Kafka from inside the kafka container
 docker exec -i "${kafka_cid}" bash -lc \
   "echo '${don_json}' | kafka-console-producer --bootstrap-server localhost:9092 --topic '${TOPIC}' >/dev/null"
 log "Produced donation event_id=${don_id} amount_usd=${don_amount} stream_id=${don_stream}"
@@ -91,7 +86,6 @@ wait_until_dots "Postgres has donations_usd > 0 (recent)" 150 bash -lc \
      | grep -E '^[0-9]+' | awk '{exit !(\\\$1>0)}'\""
 log "Donations aggregation OK 💰✅"
 
-# Show last 3 rows for confidence
 docker exec -i "${pg_cid}" bash -lc \
   "psql -U rt -d realtime -c \"
    SELECT window_start, stream_id, active_viewers, chat_messages, donations_usd
@@ -108,6 +102,30 @@ json="$(curl -fsS http://localhost:8000/metrics)"
 echo "$json" | grep -q '"rows"' || { err "/metrics missing rows"; exit 1; }
 echo "$json" | grep -q '"latest_window_start"' || { err "/metrics missing latest_window_start"; exit 1; }
 log "API /metrics shape OK ✅"
+
+# Optional observability checks
+if [[ "${WITH_OBS:-0}" == "1" || "${CHECK_OBS:-0}" == "1" ]]; then
+  echo ""
+  info "[6] Observability checks (Prometheus + Grafana + /prometheus)"
+
+  # Prometheus ready
+  curl -fsS http://localhost:9090/-/ready >/dev/null || { err "Prometheus not ready"; exit 1; }
+  log "Prometheus ready ✅"
+
+  # Grafana ready
+  curl -fsS http://localhost:3000/api/health >/dev/null || { err "Grafana not ready"; exit 1; }
+  log "Grafana ready ✅"
+
+  # API /prometheus endpoint
+  prom="$(curl -fsS http://localhost:8000/prometheus)"
+  echo "$prom" | grep -q '^api_http_requests_total' || { err "/prometheus missing api_http_requests_total"; exit 1; }
+  echo "$prom" | grep -q '^api_http_request_duration_seconds_bucket' || { err "/prometheus missing api_http_request_duration_seconds_bucket"; exit 1; }
+  log "API /prometheus OK ✅"
+
+  # Prometheus sees API target (simple presence check)
+  curl -fsS http://localhost:9090/api/v1/targets | grep -q 'metrics-api:8000' || { err "Prometheus does not list metrics-api target"; exit 1; }
+  log "Prometheus target present ✅"
+fi
 
 echo "=========================================="
 echo "✅ Smoke tests passed"
