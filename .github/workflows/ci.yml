@@ -11,6 +11,7 @@ concurrency:
 
 jobs:
   smoke:
+    name: Base pipeline smoke
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -34,18 +35,18 @@ jobs:
           sudo rm -rf /usr/share/dotnet || true
           docker system prune -af || true
 
-      - name: Build + start stack
+      - name: Build + start stack (base)
         run: |
           set -euo pipefail
           make up
 
-      - name: Run smoke tests
+      - name: Run smoke tests (base)
         run: |
           set -euo pipefail
           make smoke
 
       # If smoke fails, print logs to make debugging easy
-      - name: Dump logs on failure
+      - name: Dump logs on failure (base)
         if: failure()
         run: |
           set -e
@@ -65,3 +66,64 @@ jobs:
           set -e
           make down || true
           docker compose down -v --remove-orphans || true
+
+  observability:
+    name: Observability overlay check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show tool versions
+        run: |
+          set -e
+          docker --version
+          docker compose version
+          make --version || true
+
+      - name: Free disk space (optional)
+        run: |
+          set -e
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/share/dotnet || true
+          docker system prune -af || true
+
+      - name: Build + start stack (full, no smoke)
+        run: |
+          set -euo pipefail
+          # Start with overlay and wait for Prom/Grafana.
+          # RUN_SMOKE=0 avoids running full pipeline smoke twice in CI.
+          RUN_SMOKE=0 OBS_WAIT=1 make full-up
+
+      - name: Verify Prometheus + Grafana + scrape endpoint
+        run: |
+          set -euo pipefail
+          curl -fsS http://localhost:9090/-/ready
+          curl -fsS http://localhost:3000/api/health
+          curl -fsS http://localhost:8000/prometheus | grep -q '^api_http_requests_total'
+          # Also verify that Prometheus actually ingested at least one sample
+          curl -fsS "http://localhost:9090/api/v1/query?query=api_http_requests_total" | grep -q '"result"\s*:\s*\['
+
+      - name: Dump logs on failure (full)
+        if: failure()
+        run: |
+          set -e
+          docker compose -f docker-compose.yml -f docker-compose.observability.yml ps || true
+          echo "===== prometheus logs ====="
+          docker compose -f docker-compose.yml -f docker-compose.observability.yml logs --no-color --tail=300 prometheus || true
+          echo "===== grafana logs ====="
+          docker compose -f docker-compose.yml -f docker-compose.observability.yml logs --no-color --tail=300 grafana || true
+          echo "===== api logs ====="
+          docker compose -f docker-compose.yml -f docker-compose.observability.yml logs --no-color --tail=300 metrics-api || true
+
+      - name: Tear down (always)
+        if: always()
+        run: |
+          set -e
+          # full-down wipes volumes; in CI that's fine and keeps runners clean
+          make full-down || true
+          docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v --remove-orphans || true
