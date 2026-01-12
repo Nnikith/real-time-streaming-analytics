@@ -4,6 +4,7 @@ set -euo pipefail
 # ============================================================================
 # doctor.sh — Full environment + stack diagnostics for:
 # Kafka → Spark Structured Streaming → Postgres → FastAPI
+# (and optionally Prometheus → Grafana if present in the active compose config)
 #
 # Usage:
 #   ./scripts/doctor.sh
@@ -13,6 +14,8 @@ set -euo pipefail
 #   API_URL=http://localhost:8000
 #   SHOW_LOGS=0|1
 #   LOG_TAIL=200
+#   PROM_URL=http://localhost:9090
+#   GRAFANA_URL=http://localhost:3000
 #
 # READ-ONLY:
 # - No topics created
@@ -42,6 +45,8 @@ SHOW_LOGS="${SHOW_LOGS:-0}"
 LOG_TAIL="${LOG_TAIL:-200}"
 TOPIC="${TOPIC:-${KAFKA_TOPIC:-stream.events}}"
 API_URL="${API_URL:-http://localhost:8000}"
+PROM_URL="${PROM_URL:-http://localhost:9090}"
+GRAFANA_URL="${GRAFANA_URL:-http://localhost:3000}"
 
 EXIT_STATUS=0
 ISSUES=()
@@ -91,9 +96,16 @@ port_in_use() {
   fi
 }
 
+has_service() {
+  # Returns 0 if service name appears in the active compose config
+  compose config --services 2>/dev/null | grep -qx "$1"
+}
+
 echo "${BOLD}🩺 Doctor — Real-Time Streaming Pipeline Diagnostics${RESET}"
-echo "Topic: ${TOPIC}"
-echo "API:   ${API_URL}"
+echo "Topic:    ${TOPIC}"
+echo "API:      ${API_URL}"
+echo "Prom:     ${PROM_URL}"
+echo "Grafana:  ${GRAFANA_URL}"
 hr
 
 # ----------------------------------------------------------------------------
@@ -105,8 +117,18 @@ docker info >/dev/null 2>&1 && ok "docker daemon running" || { fail "docker daem
 
 docker compose version >/dev/null 2>&1 && ok "docker compose available" || { fail "docker compose missing"; add_issue "compose missing"; }
 
+# ----------------------------------------------------------------------------
 title "Host Port Availability"
-for p in 9092 5432 8000; do
+
+# Always check base ports
+BASE_PORTS=(9092 5432 8000)
+
+# Optionally check observability ports if those services exist in the active config
+OBS_PORTS=()
+if has_service prometheus; then OBS_PORTS+=(9090); fi
+if has_service grafana; then OBS_PORTS+=(3000); fi
+
+for p in "${BASE_PORTS[@]}" "${OBS_PORTS[@]}"; do
   if port_in_use "$p"; then
     warn "Port $p in use on host"
     add_issue "port $p in use"
@@ -140,7 +162,12 @@ compose config >/dev/null 2>&1 && ok "compose config valid" || { fail "compose c
 
 compose ps || { warn "compose ps failed"; add_issue "compose ps failed"; }
 
+# Base services always expected
 SERVICES=(zookeeper kafka postgres event-generator spark-stream metrics-api)
+
+# Optional services if present in active config
+if has_service prometheus; then SERVICES+=(prometheus); fi
+if has_service grafana; then SERVICES+=(grafana); fi
 
 title "Service Status"
 for svc in "${SERVICES[@]}"; do
@@ -228,7 +255,50 @@ echo "$metrics" | grep -q '"rows"' && echo "$metrics" | grep -q '"latest_window_
   && ok "/metrics shape OK" || { warn "/metrics invalid"; add_issue "api metrics"; }
 
 # ----------------------------------------------------------------------------
-title "8) Summary"
+title "8) Observability Checks (Optional)"
+
+# Prometheus checks only if service exists in config
+if has_service prometheus; then
+  title "Prometheus Checks"
+
+  # Readiness endpoint
+  if curl -fsS "${PROM_URL}/-/ready" >/dev/null 2>&1; then
+    ok "Prometheus ready"
+  else
+    fail "Prometheus not ready"
+    add_issue "prometheus not ready"
+    show_tail_logs prometheus
+  fi
+
+  # Target health: best-effort without jq
+  targets="$(curl -fsS "${PROM_URL}/api/v1/targets?state=active" 2>/dev/null || true)"
+  if echo "$targets" | grep -qE '"health":"up"' && echo "$targets" | grep -qE 'metrics-api:8000|localhost:8000'; then
+    ok "Prometheus scraping metrics API (target UP)"
+  else
+    warn "Prometheus target for metrics API not confirmed UP"
+    add_issue "prometheus scrape target"
+  fi
+else
+  info "Prometheus not in active compose config; skipping"
+fi
+
+# Grafana checks only if service exists in config
+if has_service grafana; then
+  title "Grafana Checks"
+
+  if curl -fsS "${GRAFANA_URL}/api/health" | grep -q '"database":"ok"'; then
+    ok "Grafana healthy"
+  else
+    fail "Grafana health check failed"
+    add_issue "grafana unhealthy"
+    show_tail_logs grafana
+  fi
+else
+  info "Grafana not in active compose config; skipping"
+fi
+
+# ----------------------------------------------------------------------------
+title "9) Summary"
 
 if [[ "$EXIT_STATUS" -eq 0 ]]; then
   ok "All checks passed 🎉"
