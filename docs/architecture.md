@@ -98,10 +98,18 @@ The dashboard provides a real-time view of system health and stream activity.
 
 ---
 
-## Related Documentation
+## Additional Documentation
 
-- How to run the system: `quickstart.md`
-- Make targets and workflows: `makefile.md`
-- What smoke tests validate: `smoke-tests.md`
-- Observability details: `observability.md`
-- Architecture rationale: `decisions.md`
+- Back to repository root: [`README.md`](../README.md)
+- How to run the system: [`quickstart.md`](quickstart.md)
+- Architecture and data flow: [`architecture.md`](architecture.md)
+- Design decisions: [`decisions.md`](decisions.md)
+- Make targets and workflows: [`makefile.md`](makefile.md)
+- Smoke test validation: [`smoke-tests.md`](smoke-tests.md)
+- Observability details: [`observability.md`](observability.md)
+- Grafana dashboard guide: [`grafana-dashboard.md`](grafana-dashboard.md)
+- Operations and lifecycle: [`operations.md`](operations.md)
+- Troubleshooting steps: [`troubleshooting.md`](troubleshooting.md)
+- Recovery procedures: [`runbooks.md`](runbooks.md)
+- Terminology reference: [`glossary.md`](glossary.md)
+

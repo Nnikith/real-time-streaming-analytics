@@ -85,7 +85,21 @@ Panels include:
 
 ## 📚 Documentation
 
-See `docs/README.md` for full documentation index.
+All detailed documentation lives in the `docs/` directory.
+
+- **[Documentation Index README](docs/README.md)**
+- How to run the system: [`quickstart.md`](docs/quickstart.md)
+- Architecture and data flow: [`architecture.md`](docs/architecture.md)
+- Design decisions: [`decisions.md`](docs/decisions.md)
+- Make targets and workflows: [`makefile.md`](docs/makefile.md)
+- Smoke test validation: [`smoke-tests.md`](docs/smoke-tests.md)
+- Observability details: [`observability.md`](docs/observability.md)
+- Grafana dashboard guide: [`grafana-dashboard.md`](docs/grafana-dashboard.md)
+- Operations and lifecycle: [`operations.md`](docs/operations.md)
+- Troubleshooting steps: [`troubleshooting.md`](docs/troubleshooting.md)
+- Recovery procedures: [`runbooks.md`](docs/runbooks.md)
+- Terminology reference: [`glossary.md`](docs/glossary.md)
+- Script reference: [`scripts/README.md`](scripts/README.md)
 
 ---
 
@@ -94,3 +108,6 @@ See `docs/README.md` for full documentation index.
 ```bash
 make doctor
 ```
+
+## Documentation
+

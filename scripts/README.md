@@ -58,3 +58,15 @@ make logs
 - Producer is publishing (offsets advance)
 - Spark writes aggregated rows to Postgres
 - Metrics API `/health` and `/metrics` respond with expected JSON shape
+
+## Documentation
+
+- Back to repository root: [`README.md`](../README.md)
+- Full system documentation: [`docs/README.md`](../docs/README.md)
+
+- Start the system: [`start.sh`](start.sh)
+- Stop the system: [`stop.sh`](stop.sh)
+- Reset state (destructive): [`reset.sh`](reset.sh)
+- Run smoke tests: [`smoke.sh`](smoke.sh)
+- Run diagnostics: [`doctor.sh`](doctor.sh)
+- Shared helpers: [`lib.sh`](lib.sh)
